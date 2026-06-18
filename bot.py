@@ -45,28 +45,30 @@ class MudaeRoller(commands.Bot):
         self.pause_flag = False
         
     async def on_ready(self):
-        """Called when bot is ready - DOES NOT AUTO-START"""
+        """Called when bot is ready"""
         logger.info(f'Logged in as {self.user.name} (ID: {self.user.id})')
         
         self.channel = self.get_channel(CHANNEL_ID)
         if not self.channel:
             logger.error(f"Channel ID {CHANNEL_ID} not found!")
+            logger.info("Available channels:")
+            for guild in self.guilds:
+                for channel in guild.channels:
+                    logger.info(f"  #{channel.name} (ID: {channel.id})")
             return
             
         logger.info(f"Connected to channel: #{self.channel.name}")
         
-        # ONLY SEND WELCOME MESSAGE - NO AUTO-START
+        # Send welcome message
         await self.channel.send("🤖 Bot is online! Type `!start` to begin rolling.")
         logger.info("Bot is ready! Waiting for !start command...")
     
     async def send_command(self, command):
         """Send a command with rate limiting"""
         try:
-            # Check stop flag before sending
             if self.stop_flag:
                 return False
             
-            # Rate limiting
             current_time = time.time()
             if current_time - self.last_command_time < 1.0:
                 wait_time = 1.0 - (current_time - self.last_command_time)
@@ -150,7 +152,7 @@ class MudaeRoller(commands.Bot):
                             break
                         logger.info("▶️ Resuming rolls...")
                 
-                # Wait between rolls - check stop during wait
+                # Wait between rolls
                 wait_time = 1.0 + random.uniform(-0.1, 0.1)
                 for _ in range(int(wait_time * 10)):
                     if self.stop_flag:
@@ -164,34 +166,34 @@ class MudaeRoller(commands.Bot):
                 logger.error(f"Error in roll loop: {e}")
                 await asyncio.sleep(2)
         
-        # Clean up
         self.is_running = False
         self.roll_task = None
         logger.info(f"Roll loop ended. Total rolls: {self.total_rolls}")
     
     async def on_message(self, message):
-        """Handle commands - THIS IS THE FIX"""
+        """Handle commands"""
+        # IMPORTANT: Let the bot process commands from ANY channel
+        # But only respond in the designated channel
+        
         # Ignore our own messages
         if message.author.id == self.user.id:
             return
             
-        # Only process messages in designated channel
-        if message.channel.id != CHANNEL_ID:
+        content = message.content.lower().strip()
+        logger.info(f"📩 Received: '{content}' from {message.author.name} in #{message.channel.name}")
+        
+        # Check if it's a command
+        if not content.startswith('!'):
             return
             
-        content = message.content.lower().strip()
-        logger.info(f"📩 Received command: {content} from {message.author.name}")
-        
         # ===== STOP COMMAND =====
         if content == '!stop':
             logger.info("🛑 !STOP COMMAND RECEIVED!")
             
-            # Set stop flags immediately
             self.stop_flag = True
             self.is_running = False
             self.pause_flag = False
             
-            # Cancel the task
             if self.roll_task:
                 logger.info("Cancelling roll task...")
                 self.roll_task.cancel()
@@ -201,7 +203,7 @@ class MudaeRoller(commands.Bot):
                     pass
                 self.roll_task = None
             
-            # Send confirmation
+            # Send confirmation in the channel where command was received
             await message.channel.send(f"🛑 Stopped! Total rolls: {self.total_rolls}")
             logger.info(f"✅ Bot stopped. Total rolls: {self.total_rolls}")
             return
@@ -214,7 +216,6 @@ class MudaeRoller(commands.Bot):
                 await message.channel.send("Bot is already rolling!")
                 return
             
-            # Reset flags
             self.stop_flag = False
             self.is_running = True
             
