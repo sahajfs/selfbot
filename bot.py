@@ -42,10 +42,10 @@ class MudaeRoller(commands.Bot):
         self.channel = None
         self.last_command_time = 0
         self.stop_flag = False
-        self.pause_flag = False  # NEW: Flag to pause between commands
+        self.pause_flag = False
         
     async def on_ready(self):
-        """Called when bot is ready"""
+        """Called when bot is ready - DOES NOT AUTO-START"""
         logger.info(f'Logged in as {self.user.name} (ID: {self.user.id})')
         
         self.channel = self.get_channel(CHANNEL_ID)
@@ -55,28 +55,26 @@ class MudaeRoller(commands.Bot):
             
         logger.info(f"Connected to channel: #{self.channel.name}")
         
-        # Send startup message
-        await self.channel.send("🤖 Bot is online! Use `!start` to begin rolling.")
+        # ONLY SEND WELCOME MESSAGE - NO AUTO-START
+        await self.channel.send("🤖 Bot is online! Type `!start` to begin rolling.")
+        logger.info("Bot is ready! Waiting for !start command...")
     
     async def send_command(self, command):
-        """Send a command with rate limiting - ALWAYS checks for stop"""
+        """Send a command with rate limiting"""
         try:
             # Check stop flag before sending
             if self.stop_flag:
-                logger.info("Stop flag detected - skipping command")
                 return False
             
             # Rate limiting
             current_time = time.time()
             if current_time - self.last_command_time < 1.0:
                 wait_time = 1.0 - (current_time - self.last_command_time)
-                # Check stop during wait
                 for _ in range(int(wait_time * 10)):
                     if self.stop_flag:
                         return False
                     await asyncio.sleep(0.1)
             
-            # Final stop check before sending
             if self.stop_flag:
                 return False
                 
@@ -89,7 +87,6 @@ class MudaeRoller(commands.Bot):
             if e.status == 429:
                 retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
                 logger.warning(f"Rate limited! Waiting {retry_after}s")
-                # Check stop during rate limit wait
                 for _ in range(int(retry_after * 2)):
                     if self.stop_flag:
                         return False
@@ -103,8 +100,8 @@ class MudaeRoller(commands.Bot):
             return False
     
     async def roll_loop(self):
-        """Main rolling loop with proper stop handling"""
-        logger.info("Roll loop started!")
+        """Main rolling loop"""
+        logger.info("🔄 Roll loop started!")
         self.is_running = True
         self.roll_count = 0
         self.total_rolls = 0
@@ -114,11 +111,6 @@ class MudaeRoller(commands.Bot):
         
         while self.is_running and not self.stop_flag:
             try:
-                # Check stop flag
-                if self.stop_flag:
-                    logger.info("Stop flag detected - breaking loop")
-                    break
-                
                 # Send roll command
                 success = await self.send_command('$wg')
                 
@@ -131,7 +123,6 @@ class MudaeRoller(commands.Bot):
                     
                     # Check if we need to use $us
                     if self.roll_count >= 20:
-                        # Check stop before $us
                         if self.stop_flag:
                             break
                             
@@ -141,8 +132,8 @@ class MudaeRoller(commands.Bot):
                         self.roll_count = 0
                         logger.info(f"$us 20 executed. Total rolls: {self.total_rolls}")
                         
-                        # ===== 15 SECOND PAUSE =====
-                        logger.info("⏳ 15 second pause - you can type !stop now!")
+                        # 15 SECOND PAUSE
+                        logger.info("⏳ 15 second pause - type !stop now!")
                         self.pause_flag = True
                         
                         for i in range(15):
@@ -158,7 +149,6 @@ class MudaeRoller(commands.Bot):
                         if self.stop_flag:
                             break
                         logger.info("▶️ Resuming rolls...")
-                        # ===========================
                 
                 # Wait between rolls - check stop during wait
                 wait_time = 1.0 + random.uniform(-0.1, 0.1)
@@ -180,7 +170,7 @@ class MudaeRoller(commands.Bot):
         logger.info(f"Roll loop ended. Total rolls: {self.total_rolls}")
     
     async def on_message(self, message):
-        """Handle commands from user - HIGH PRIORITY"""
+        """Handle commands - THIS IS THE FIX"""
         # Ignore our own messages
         if message.author.id == self.user.id:
             return
@@ -190,8 +180,9 @@ class MudaeRoller(commands.Bot):
             return
             
         content = message.content.lower().strip()
+        logger.info(f"📩 Received command: {content} from {message.author.name}")
         
-        # ===== STOP COMMAND - HIGHEST PRIORITY =====
+        # ===== STOP COMMAND =====
         if content == '!stop':
             logger.info("🛑 !STOP COMMAND RECEIVED!")
             
@@ -217,14 +208,19 @@ class MudaeRoller(commands.Bot):
         
         # ===== START COMMAND =====
         if content == '!start':
+            logger.info("▶️ !START COMMAND RECEIVED!")
+            
             if self.is_running:
                 await message.channel.send("Bot is already rolling!")
                 return
             
-            logger.info("▶️ !START command received")
+            # Reset flags
             self.stop_flag = False
-            await message.channel.send("▶️ Starting rolling loop!")
+            self.is_running = True
+            
+            await message.channel.send("▶️ Starting rolling loop! Rolling $wg every second...")
             self.roll_task = asyncio.create_task(self.roll_loop())
+            logger.info("Roll loop task created!")
             return
         
         # ===== STATUS COMMAND =====
@@ -245,7 +241,7 @@ class MudaeRoller(commands.Bot):
             await message.channel.send(
                 "**Commands:**\n"
                 "• `!start` - Start rolling\n"
-                "• `!stop` - Stop rolling (WORKS!)\n"
+                "• `!stop` - Stop rolling\n"
                 "• `!status` - Check status\n"
                 "• `!help` - Show help\n\n"
                 "**Features:**\n"
