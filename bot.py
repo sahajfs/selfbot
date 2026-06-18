@@ -7,7 +7,7 @@ import logging
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
 # Setup logging
@@ -26,16 +26,10 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 SERVER_ID = os.getenv('SERVER_ID')
 
-# Convert to integers
 if CHANNEL_ID:
     CHANNEL_ID = int(CHANNEL_ID)
 if SERVER_ID:
     SERVER_ID = int(SERVER_ID)
-
-# Debug: Check if variables loaded
-logger.info(f"Token loaded: {'Yes' if TOKEN else 'No'}")
-logger.info(f"Channel ID loaded: {CHANNEL_ID if CHANNEL_ID else 'No'}")
-logger.info(f"Server ID loaded: {SERVER_ID if SERVER_ID else 'No'}")
 # =====================================
 
 class MudaeRoller(commands.Bot):
@@ -52,20 +46,15 @@ class MudaeRoller(commands.Bot):
         self.roll_task = None
         self.channel = None
         self.last_command_time = 0
-        self.stop_requested = False
+        self.should_stop = False
         
     async def on_ready(self):
         """Called when bot is ready - auto-starts rolling"""
         logger.info(f'Logged in as {self.user.name} (ID: {self.user.id})')
         
-        # Get the channel
         self.channel = self.get_channel(CHANNEL_ID)
         if not self.channel:
             logger.error(f"Channel ID {CHANNEL_ID} not found!")
-            logger.info("Available channels:")
-            for guild in self.guilds:
-                for channel in guild.channels:
-                    logger.info(f"  #{channel.name} (ID: {channel.id})")
             return
             
         logger.info(f"Connected to channel: #{self.channel.name}")
@@ -87,7 +76,7 @@ class MudaeRoller(commands.Bot):
             logger.debug(f"Sent: {command}")
             return True
         except discord.errors.HTTPException as e:
-            if e.status == 429:  # Rate limited
+            if e.status == 429:
                 retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
                 logger.warning(f"Rate limited! Waiting {retry_after}s")
                 await asyncio.sleep(retry_after)
@@ -100,16 +89,21 @@ class MudaeRoller(commands.Bot):
             return False
     
     async def roll_loop(self):
-        """Main rolling loop - starts immediately"""
+        """Main rolling loop with 15-second pause after $us 20"""
         logger.info("Roll loop started!")
         self.is_running = True
         self.roll_count = 0
         self.total_rolls = 0
-        self.stop_requested = False
+        self.should_stop = False
         
-        await asyncio.sleep(2)  # Initial delay before starting
+        await asyncio.sleep(2)
         
-        while self.is_running and not self.stop_requested:
+        while self.is_running:
+            # Check if stop was requested
+            if self.should_stop:
+                logger.info("Stop flag detected - breaking loop")
+                break
+                
             try:
                 # Send roll command
                 success = await self.send_command('$wg')
@@ -128,8 +122,26 @@ class MudaeRoller(commands.Bot):
                         await self.send_command('$us 20')
                         self.roll_count = 0
                         logger.info(f"$us 20 executed. Total rolls: {self.total_rolls}")
+                        
+                        # ===== NEW: 15 SECOND PAUSE AFTER $US 20 =====
+                        logger.info("⏳ Pausing for 15 seconds to allow commands...")
+                        
+                        # Break the pause into small chunks to check for stop command
+                        for i in range(15):
+                            if self.should_stop:
+                                logger.info("Stop detected during pause - breaking")
+                                break
+                            if not self.is_running:
+                                break
+                            await asyncio.sleep(1)
+                            # Log every 5 seconds
+                            if (i + 1) % 5 == 0:
+                                logger.info(f"⏳ Pause: {i+1}/15 seconds elapsed")
+                        
+                        logger.info("▶️ Resuming rolls after pause")
+                        # ============================================
                 
-                # Wait exactly 1 second between rolls
+                # Wait between rolls
                 wait_time = 1.0 + random.uniform(-0.1, 0.1)
                 await asyncio.sleep(max(0.8, wait_time))
                 
@@ -140,8 +152,9 @@ class MudaeRoller(commands.Bot):
                 logger.error(f"Error in roll loop: {e}")
                 await asyncio.sleep(2)
         
-        logger.info("Roll loop ended")
+        # Clean up when loop ends
         self.is_running = False
+        logger.info(f"Roll loop ended. Total rolls: {self.total_rolls}")
     
     async def on_message(self, message):
         """Handle commands from user"""
@@ -160,11 +173,14 @@ class MudaeRoller(commands.Bot):
                 await message.channel.send("Bot is already stopped!")
                 return
             
-            logger.info("Stop command received - stopping roll loop...")
-            self.stop_requested = True
+            logger.info("🛑 Stop command received - stopping roll loop...")
+            
+            # SET THE STOP FLAG
+            self.should_stop = True
             self.is_running = False
             
-            if self.roll_task:
+            # Cancel the task if it exists
+            if self.roll_task and not self.roll_task.done():
                 self.roll_task.cancel()
                 try:
                     await self.roll_task
@@ -172,7 +188,7 @@ class MudaeRoller(commands.Bot):
                     pass
                 self.roll_task = None
             
-            await message.channel.send(f"Stopped rolling. Total rolls performed: {self.total_rolls}")
+            await message.channel.send(f"🛑 Stopped rolling. Total rolls performed: {self.total_rolls}")
             logger.info(f"Bot stopped. Total rolls: {self.total_rolls}")
             
         elif content == '!start':
@@ -180,27 +196,31 @@ class MudaeRoller(commands.Bot):
                 await message.channel.send("Bot is already rolling!")
                 return
             
-            logger.info("Start command received - starting roll loop...")
-            self.stop_requested = False
-            await message.channel.send("Starting rolling loop!")
+            logger.info("▶️ Start command received - starting roll loop...")
+            self.should_stop = False
+            await message.channel.send("▶️ Starting rolling loop!")
             self.roll_task = asyncio.create_task(self.roll_loop())
             
         elif content == '!status':
-            status = "Running" if self.is_running else "Stopped"
+            status = "🟢 Running" if self.is_running else "🔴 Stopped"
             await message.channel.send(
-                f"Bot Status:\n"
-                f"Status: {status}\n"
-                f"Total Rolls: {self.total_rolls}\n"
-                f"Rolls since last $us: {self.roll_count}/20"
+                f"**Bot Status:**\n"
+                f"• Status: {status}\n"
+                f"• Total Rolls: {self.total_rolls}\n"
+                f"• Rolls since last $us: {self.roll_count}/20"
             )
             
         elif content == '!help':
             await message.channel.send(
-                "Commands:\n"
-                "!start - Start rolling\n"
-                "!stop - Stop rolling\n"
-                "!status - Check status\n"
-                "!help - Show help"
+                "**Commands:**\n"
+                "• `!start` - Start rolling\n"
+                "• `!stop` - Stop rolling\n"
+                "• `!status` - Check status\n"
+                "• `!help` - Show help\n\n"
+                "**Info:**\n"
+                "• Rolls $wg every second\n"
+                "• $us 20 after every 20 rolls\n"
+                "• 15 second pause after $us 20"
             )
 
 # Create bot instance
@@ -208,25 +228,21 @@ bot = MudaeRoller()
 
 if __name__ == "__main__":
     try:
-        # Check if variables are loaded
         if not TOKEN:
-            logger.error("❌ No Discord token found! Check .env file")
-            logger.info("Make sure .env file exists with: DISCORD_TOKEN=your_token_here")
+            logger.error("No Discord token found! Check .env file")
             exit(1)
             
         if not CHANNEL_ID:
-            logger.error("❌ No channel ID found! Check .env file")
-            logger.info("Make sure .env file exists with: CHANNEL_ID=your_channel_id_here")
+            logger.error("No channel ID found! Check .env file")
             exit(1)
             
-        logger.info("🚀 Starting Mudae Roller Bot...")
-        logger.info(f"📌 Channel ID: {CHANNEL_ID}")
+        logger.info("Starting Mudae Roller Bot...")
         bot.run(TOKEN)
         
     except KeyboardInterrupt:
-        logger.info("🛑 Bot stopped by user")
+        logger.info("Bot stopped by user")
     except discord.errors.LoginFailure:
-        logger.error("❌ Invalid token! Please check your token.")
+        logger.error("Invalid token! Please check your token.")
     except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
+        logger.error(f"Fatal error: {e}")
         exit(1)
