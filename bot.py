@@ -41,11 +41,16 @@ class MudaeRoller(discord.Client):
         self.channel = None
         self.last_send_time = 0
         self.stop_flag = False
+        self.rate_limited_until = 0      # epoch: pause rolling until this time
 
         # Claim state
         self.can_claim = True
-        self.claim_reset_at = None        # epoch seconds when claim unlocks
-        self.waiting_for_claim_reply = False  # True while we wait for Mudae's claim response
+        self.claim_reset_at = None
+        self.waiting_for_claim_reply = False
+
+        # Track recent Mudae roll message IDs we already tried to claim
+        # so on_message_edit doesn't double-claim
+        self.already_handled = set()
 
     async def on_ready(self):
         logger.info(f'Logged in as {self.user.name} (ID: {self.user.id})')
@@ -58,12 +63,30 @@ class MudaeRoller(discord.Client):
         asyncio.create_task(self.roll_loop())
 
     async def safe_send(self, msg):
+        """Send a message, respecting rate limit pauses."""
+        # If we're rate limited, wait it out
+        now = time.time()
+        if now < self.rate_limited_until:
+            wait = self.rate_limited_until - now
+            logger.info(f'⏳ Rate limit active — waiting {wait:.1f}s before sending')
+            await asyncio.sleep(wait)
+
         gap = time.time() - self.last_send_time
-        if gap < 0.8:
-            await asyncio.sleep(0.8 - gap)
+        if gap < 1.2:
+            await asyncio.sleep(1.2 - gap)
+
         try:
             await self.channel.send(msg)
             self.last_send_time = time.time()
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                retry_after = float(getattr(e, 'retry_after', 5) or 5)
+                logger.warning(f'🚫 Rate limited! Pausing {retry_after:.1f}s')
+                self.rate_limited_until = time.time() + retry_after
+                await asyncio.sleep(retry_after + 0.5)
+            else:
+                logger.error(f'HTTP error sending: {e}')
+                await asyncio.sleep(3)
         except Exception as e:
             logger.error(f'Send error: {e}')
             await asyncio.sleep(3)
@@ -88,15 +111,17 @@ class MudaeRoller(discord.Client):
                 if self.total_rolls % 50 == 0:
                     logger.info(f'Rolls: {self.total_rolls} | Claim ready: {self.can_claim}')
 
-                # Every 20 rolls reset uses
+                # Every 20 rolls, reset uses
                 if self.roll_count >= 20:
-                    await asyncio.sleep(0.8)
+                    await asyncio.sleep(1.5)
                     await self.safe_send('$us 20')
                     self.roll_count = 0
-                    logger.info('$us 20 sent')
-                    await asyncio.sleep(3)
+                    logger.info('$us 20 sent — short pause')
+                    await asyncio.sleep(4)
+                    continue
 
-                await asyncio.sleep(random.uniform(0.9, 1.3))
+                # Delay between rolls — slow enough to avoid 429s
+                await asyncio.sleep(random.uniform(2.0, 3.0))
 
             except Exception as e:
                 logger.error(f'Roll loop error: {e}')
@@ -105,64 +130,104 @@ class MudaeRoller(discord.Client):
         self.is_running = False
         logger.info('Roll loop stopped')
 
+    def _is_unclaimed_embed(self, embed):
+        """True if embed looks like an unclaimed Mudae character."""
+        if not embed or not embed.title:
+            return False
+        footer_text = (embed.footer.text or '').lower() if embed.footer else ''
+        # Claimed = has "belongs to" in footer
+        if 'belongs to' in footer_text:
+            return False
+        # Must have some content to be a real character card
+        if not embed.description and not embed.fields and not embed.image:
+            return False
+        return True
+
+    async def _try_claim(self, message):
+        """Click the first available button on the embed (the claim button)."""
+        if not message.components:
+            logger.info('No components on message yet — will retry on edit')
+            return False
+
+        for row in message.components:
+            for component in row.children:
+                if not hasattr(component, 'click'):
+                    continue
+                try:
+                    await component.click()
+                    emoji = getattr(component, 'emoji', '?')
+                    logger.info(f'✅ Clicked claim button! (emoji: {emoji})')
+                    self.waiting_for_claim_reply = True
+                    return True
+                except discord.errors.HTTPException as e:
+                    if e.status == 429:
+                        retry_after = float(getattr(e, 'retry_after', 5) or 5)
+                        logger.warning(f'🚫 Rate limited on button click — waiting {retry_after:.1f}s')
+                        await asyncio.sleep(retry_after + 0.5)
+                    logger.warning(f'Button click HTTP error: {e}')
+                    return False
+                except Exception as e:
+                    logger.warning(f'Button click failed: {e}')
+                    return False
+
+        logger.warning('No clickable button found on embed')
+        return False
+
+    async def handle_mudae_embed(self, message):
+        """Check embed footer and claim if unclaimed. Called on new message AND edits."""
+        if not message.embeds:
+            return
+
+        embed = message.embeds[0]
+        if not self._is_unclaimed_embed(embed):
+            return
+
+        # Don't double-claim the same message
+        if message.id in self.already_handled:
+            return
+
+        if not self.can_claim:
+            mins_left = max(0, int((self.claim_reset_at - time.time()) / 60)) if self.claim_reset_at else '?'
+            logger.info(f'Unclaimed char "{embed.title}" — claim locked (~{mins_left} min left)')
+            return
+
+        # Mark as handled before clicking to prevent race condition
+        self.already_handled.add(message.id)
+        # Keep the set from growing forever
+        if len(self.already_handled) > 200:
+            self.already_handled = set(list(self.already_handled)[-100:])
+
+        logger.info(f'🎯 Unclaimed: "{embed.title}" — attempting claim...')
+        await asyncio.sleep(0.3)
+        await self._try_claim(message)
+
     async def on_message(self, message):
         if message.channel.id != CHANNEL_ID:
             return
 
-        # ── Mudae responses ───────────────────────────────────────────────────
+        # ── Mudae messages ────────────────────────────────────────────────────
         if message.author.id == MUDAE_BOT_ID:
 
-            # --- Claim result detection (runs before embed check) ---
-            # If we just tried to claim, watch for Mudae's reply
+            # Watch for claim result text
             if self.waiting_for_claim_reply and message.content:
                 content_lower = message.content.lower()
-
                 if "can't claim" in content_lower or "cannot claim" in content_lower or "claim reset" in content_lower:
-                    # Parse how many minutes until reset
                     match = re.search(r'(\d+)\s*min', message.content, re.IGNORECASE)
                     minutes = int(match.group(1)) if match else 60
                     self.can_claim = False
                     self.claim_reset_at = time.time() + (minutes * 60)
                     self.waiting_for_claim_reply = False
-                    logger.info(f'⏳ Claim on cooldown for {minutes} min — rolling continues.')
+                    logger.info(f'⏳ Claim locked for {minutes} min — rolling continues')
                     return
-
-                # Successful claim — Mudae edits the embed footer to "belongs to X"
-                # We'll just clear the flag; the embed update handles the rest
                 self.waiting_for_claim_reply = False
 
-            # --- Character embed detection ---
-            if message.embeds:
-                embed = message.embeds[0]
-
-                # Only act on embeds that look like character cards (have a title)
-                if not embed.title:
-                    return
-
-                footer_text = (embed.footer.text or '').lower() if embed.footer else ''
-
-                if 'belongs to' in footer_text:
-                    # Already claimed — nothing to do
-                    logger.debug(f'Claimed char: {embed.title} — skipping')
-                    return
-
-                # No "belongs to" in footer = unclaimed!
-                if self.can_claim:
-                    logger.info(f'🎯 Unclaimed: {embed.title} — clicking claim button...')
-                    await asyncio.sleep(0.3)
-                    claimed = await self.click_claim_button(message)
-                    if claimed:
-                        self.waiting_for_claim_reply = True
-                else:
-                    mins_left = max(0, int((self.claim_reset_at - time.time()) / 60)) if self.claim_reset_at else '?'
-                    logger.info(f'Unclaimed char seen but claim locked (~{mins_left} min left) — skipping')
-
-            return  # End of Mudae message handling
+            await self.handle_mudae_embed(message)
+            return
 
         # ── Your commands ─────────────────────────────────────────────────────
         raw = message.content.strip()
         if raw.startswith('$'):
-            return  # Ignore our own roll commands
+            return
 
         cmd = raw.lower()
 
@@ -209,31 +274,16 @@ class MudaeRoller(discord.Client):
             self.roll_count = 0
             await message.channel.send('🔄 Counters reset!')
 
-    async def click_claim_button(self, message):
+    async def on_message_edit(self, before, after):
         """
-        Click the first button on a Mudae character embed.
-        Mudae only puts one button on unclaimed chars — the claim button.
-        It's a random Nitro emoji so we don't check what it looks like,
-        we just click whatever button is there.
-        Returns True if a button was found and clicked, False otherwise.
+        Mudae adds the claim button by EDITING the message after sending.
+        So we also check edited messages for unclaimed characters.
         """
-        if message.components:
-            for row in message.components:
-                for component in row.children:
-                    # Skip if it's not a clickable button
-                    if not hasattr(component, 'click'):
-                        continue
-                    try:
-                        await component.click()
-                        emoji = getattr(component, 'emoji', None)
-                        logger.info(f'✅ Clicked claim button! (emoji: {emoji})')
-                        return True
-                    except Exception as e:
-                        logger.warning(f'Button click failed: {e}')
-                        return False
-
-        logger.warning('❌ No button found on this embed — Mudae may have changed format')
-        return False
+        if after.channel.id != CHANNEL_ID:
+            return
+        if after.author.id != MUDAE_BOT_ID:
+            return
+        await self.handle_mudae_embed(after)
 
 
 if __name__ == '__main__':
