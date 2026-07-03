@@ -104,7 +104,7 @@ class MudaeRoller(discord.Client):
                         self.claim_reset_at = None
                         logger.info('✅ Claim unlocked!')
 
-                await self.safe_send('$wg')
+                await self.safe_send('$wa')
                 self.roll_count += 1
                 self.total_rolls += 1
 
@@ -290,3 +290,4 @@ if __name__ == '__main__':
     threading.Thread(target=run_webserver, daemon=True).start()
     logger.info(f'Starting bot | Channel: {CHANNEL_ID}')
     MudaeRoller().run(TOKEN)
+    
