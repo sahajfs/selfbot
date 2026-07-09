@@ -61,7 +61,7 @@ REGEX_PATTERNS = {
     "DK_READY": r'\$dk.*?(?:ready|pronto|disponible|prêt|dispon[ií]vel|listo)',
 }
 
-# ── Bot ──────────────────────────────────────────────────────────────────
+# ── Bot ──────────────────────────────────────────────────────────────
 class MudaeRoller(discord.Client):
     def __init__(self):
         super().__init__()
@@ -93,7 +93,7 @@ class MudaeRoller(discord.Client):
         
         # DESIRED KAKERA FOR 10+ KEYS: Purple(P), Light(L), Red(R), Chaos(C), Rainbow(W)
         self.desired_kakera = ['kakeraP', 'kakeraL', 'kakeraR', 'kakeraC', 'kakeraW']
-        self.kakera_priority_order = ['kakeraP', 'kakeraL', 'kakeraR', 'kakeraC', 'kakeraW', 'kakeraO', 'kakeraY', 'kakeraD', 'kakeraG', 'kakeraT']
+        self.kakera_priority_order = ['kakeraP', 'kakeraL', 'kakeraR', 'kakeraC', 'kakeraW', 'kakeraO', 'kakeraY', 'kakeraD']
         
         # ── Current claim ──────────────────────────────────────────────
         self.current_claim = '$wa'
@@ -410,8 +410,8 @@ class MudaeRoller(discord.Client):
                 continue
 
         return clicked_count > 0
-        
-        # ── ROLL LOOP ── 5-5-5-5 Pattern ─────────────────────────────────
+
+    # ── ROLL LOOP ── 5-5-5-5 Pattern ─────────────────────────────────
     async def roll_loop(self):
         logger.info(f'🚀 Roll loop started! Using: {self.current_claim}')
         logger.info(f'📊 Pattern: 5 rolls → pause → 5 rolls → pause → 5 rolls → pause → 5 rolls → pause → $us 20')
@@ -645,7 +645,7 @@ class MudaeRoller(discord.Client):
             )
             return
 
-# ── MAIN ──────────────────────────────────────────────────────────────────
+# ── MAIN ──────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     threading.Thread(target=run_webserver, daemon=True).start()
     logger.info(f'Starting bot | Channel: {CHANNEL_ID}')
