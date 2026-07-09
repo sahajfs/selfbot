@@ -61,7 +61,7 @@ REGEX_PATTERNS = {
     "DK_READY": r'\$dk.*?(?:ready|pronto|disponible|prêt|dispon[ií]vel|listo)',
 }
 
-# ── Bot ──────────────────────────────────────────────────────────────────
+# ── Bot ──────────────────────────────────────────────────────────────
 class MudaeRoller(discord.Client):
     def __init__(self):
         super().__init__()
@@ -85,15 +85,16 @@ class MudaeRoller(discord.Client):
         self.last_dk_power_update_utc = None
         self.kakera_reaction_cooldown = 0
         self.kakera_reacted_messages = set()
+        self.last_kakera_cleanup = time.time()
         
         # ── KAKERA EMOJIS ──────────────────────────────────────────────
         self.kakera_emojis = ['kakeraY', 'kakeraO', 'kakeraR', 'kakeraW', 'kakeraL', 'kakeraP', 'kakeraD', 'kakeraC']
         self.chaos_emojis = ['kakeraY', 'kakeraO', 'kakeraR', 'kakeraW', 'kakeraL', 'kakeraP', 'kakeraD', 'kakeraC']
         self.sphere_emojis = ['spP', 'spB', 'spT', 'spG', 'spY', 'spO', 'spR', 'spW', 'spL', 'spD', 'spM', 'spP2', 'spB2', 'spT2', 'spG2', 'spY2', 'spO2', 'spR2', 'spW2', 'spL2', 'spD2', 'spU']
         
-        # DESIRED KAKERA FOR 10+ KEYS: Purple, Orange, Light, Rainbow, Chaos
-        self.desired_kakera = ['kakeraP', 'kakeraO', 'kakeraL', 'kakeraC', 'kakeraY']
-        self.kakera_priority_order = ['kakeraP', 'kakeraO', 'kakeraL', 'kakeraC', 'kakeraY', 'kakeraR', 'kakeraW', 'kakeraD', 'kakeraG', 'kakeraT']
+        # DESIRED KAKERA FOR 10+ KEYS: Purple, Orange, Light, Chaos, Rainbow
+        self.desired_kakera = ['kakeraP', 'kakeraO', 'kakeraL', 'kakeraC', 'kakeraR']
+        self.kakera_priority_order = ['kakeraP', 'kakeraO', 'kakeraL', 'kakeraC', 'kakeraR', 'kakeraY', 'kakeraW', 'kakeraD', 'kakeraG', 'kakeraT']
         
         # ── Current claim ──────────────────────────────────────────────
         self.current_claim = '$wa'
@@ -231,8 +232,9 @@ class MudaeRoller(discord.Client):
                     if re.search(REGEX_PATTERNS["DK_READY"], content_lower):
                         if self.current_dk_power < 50 and self.dk_stock_count > 0:
                             logger.info('💪 Using DK to refill...')
-                            await self.safe_send('$dk')
-                            self.dk_stock_count -= 1
+                            result = await self.safe_send('$dk')
+                            if result:
+                                self.dk_stock_count -= 1
                             await asyncio.sleep(2)
                     break
             return True
@@ -256,10 +258,11 @@ class MudaeRoller(discord.Client):
         
         if self.current_dk_power < min_power_needed and self.dk_stock_count > 0:
             logger.info(f'⚡ DK Power low ({self.current_dk_power}%). Using $dk...')
-            await self.safe_send('$dk')
-            self.dk_stock_count -= 1
-            self.current_dk_power = self.max_dk_power
-            self.last_dk_power_update_utc = datetime.now(timezone.utc)
+            result = await self.safe_send('$dk')
+            if result:
+                self.dk_stock_count -= 1
+                self.current_dk_power = self.max_dk_power
+                self.last_dk_power_update_utc = datetime.now(timezone.utc)
             await asyncio.sleep(2)
             return True
         return False
@@ -279,6 +282,14 @@ class MudaeRoller(discord.Client):
         if emoji_clean in [s.rstrip('2') for s in self.sphere_emojis]:
             return True
         return False
+
+    # ── Cleanup kakera_reacted_messages ────────────────────────────────
+    def cleanup_kakera_messages(self):
+        """Clear old message IDs periodically to prevent memory leak"""
+        now = time.time()
+        if now - self.last_kakera_cleanup > 300:  # Cleanup every 5 minutes
+            self.kakera_reacted_messages.clear()
+            self.last_kakera_cleanup = now
 
     # ── HANDLE KAKERA REACTIONS ──────────────────────────────────────
     async def handle_kakera_reactions(self, message):
@@ -369,10 +380,11 @@ class MudaeRoller(discord.Client):
             if not is_free and self.current_dk_power < cost:
                 if self.dk_stock_count > 0:
                     logger.info(f'⚡ Power low ({self.current_dk_power}%), using $dk...')
-                    await self.safe_send('$dk')
-                    self.dk_stock_count -= 1
-                    self.current_dk_power = self.max_dk_power
-                    self.last_dk_power_update_utc = datetime.now(timezone.utc)
+                    result = await self.safe_send('$dk')
+                    if result:
+                        self.dk_stock_count -= 1
+                        self.current_dk_power = self.max_dk_power
+                        self.last_dk_power_update_utc = datetime.now(timezone.utc)
                     await asyncio.sleep(2)
                 else:
                     continue
@@ -451,7 +463,7 @@ class MudaeRoller(discord.Client):
         self.is_running = False
         logger.info('Roll loop stopped')
 
-         # ── MESSAGE HANDLER ──────────────────────────────────────────────
+    # ── MESSAGE HANDLER ──────────────────────────────────────────────
     async def on_message(self, message):
         # Process user commands
         if message.content and message.content.startswith('!'):
@@ -492,6 +504,7 @@ class MudaeRoller(discord.Client):
                 if has_kakera and message.id not in self.kakera_reacted_messages:
                     await asyncio.sleep(random.uniform(0.2, 0.5))
                     await self.handle_kakera_reactions(message)
+                    self.cleanup_kakera_messages()
                     return
 
     # ── PROCESS COMMANDS ──────────────────────────────────────────────
@@ -591,7 +604,7 @@ class MudaeRoller(discord.Client):
             )
             return
 
-# ── MAIN ──────────────────────────────────────────────────────────────────
+# ── MAIN ──────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     threading.Thread(target=run_webserver, daemon=True).start()
     logger.info(f'Starting bot | Channel: {CHANNEL_ID}')
