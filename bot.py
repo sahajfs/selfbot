@@ -61,7 +61,7 @@ REGEX_PATTERNS = {
     "DK_READY": r'\$dk.*?(?:ready|pronto|disponible|prêt|dispon[ií]vel|listo)',
 }
 
-# ── Bot ──────────────────────────────────────────────────────────────
+# ── Bot ──────────────────────────────────────────────────────────────────
 class MudaeRoller(discord.Client):
     def __init__(self):
         super().__init__()
@@ -85,16 +85,15 @@ class MudaeRoller(discord.Client):
         self.last_dk_power_update_utc = None
         self.kakera_reaction_cooldown = 0
         self.kakera_reacted_messages = set()
-        self.last_kakera_cleanup = time.time()
         
         # ── KAKERA EMOJIS ──────────────────────────────────────────────
         self.kakera_emojis = ['kakeraY', 'kakeraO', 'kakeraR', 'kakeraW', 'kakeraL', 'kakeraP', 'kakeraD', 'kakeraC']
         self.chaos_emojis = ['kakeraY', 'kakeraO', 'kakeraR', 'kakeraW', 'kakeraL', 'kakeraP', 'kakeraD', 'kakeraC']
         self.sphere_emojis = ['spP', 'spB', 'spT', 'spG', 'spY', 'spO', 'spR', 'spW', 'spL', 'spD', 'spM', 'spP2', 'spB2', 'spT2', 'spG2', 'spY2', 'spO2', 'spR2', 'spW2', 'spL2', 'spD2', 'spU']
         
-        # DESIRED KAKERA FOR 10+ KEYS: Purple, Orange, Light, Chaos, Rainbow
-        self.desired_kakera = ['kakeraP', 'kakeraO', 'kakeraL', 'kakeraC', 'kakeraR']
-        self.kakera_priority_order = ['kakeraP', 'kakeraO', 'kakeraL', 'kakeraC', 'kakeraR', 'kakeraY', 'kakeraW', 'kakeraD', 'kakeraG', 'kakeraT']
+        # DESIRED KAKERA FOR 10+ KEYS: Purple(P), Light(L), Red(R), Chaos(C), Rainbow(W)
+        self.desired_kakera = ['kakeraP', 'kakeraL', 'kakeraR', 'kakeraC', 'kakeraW']
+        self.kakera_priority_order = ['kakeraP', 'kakeraL', 'kakeraR', 'kakeraC', 'kakeraW', 'kakeraO', 'kakeraY', 'kakeraD', 'kakeraG', 'kakeraT']
         
         # ── Current claim ──────────────────────────────────────────────
         self.current_claim = '$wa'
@@ -123,7 +122,7 @@ class MudaeRoller(discord.Client):
 
         logger.info(f'🎴 ONLY_CHAOS: {"ON (10+ keys only)" if self.only_chaos else "OFF"}')
         logger.info(f'🎴 Desired kakera: {self.desired_kakera}')
-        logger.info(f'🚀 Roll speed: Fast with humanized randomization')
+        logger.info(f'🚀 Roll rhythm: 5-5-5-5 pattern with pauses, $us 20 after 20 rolls')
         
         self._ready = True
         self.is_running = True
@@ -131,20 +130,27 @@ class MudaeRoller(discord.Client):
         await self.check_status()
         self.roll_loop_task = asyncio.create_task(self.roll_loop())
 
-    # ── Humanized Roll Speed ───────────────────────────────────────────
-    def get_humanized_delay(self):
-        """Fast but humanized delay to avoid rate limits"""
-        # Base fast speed: 0.8 to 1.2 seconds
-        base_delay = random.uniform(0.8, 1.2)
-        
-        # 10% chance of a slightly longer pause (1.5-2.5s)
-        if random.random() < 0.10:
-            base_delay += random.uniform(0.5, 1.5)
-        
-        # Add small jitter
-        jitter = random.uniform(-0.15, 0.15)
-        
-        return max(0.5, base_delay + jitter)
+    # ── Humanized Delays ──────────────────────────────────────────────
+    def get_burst_delay(self):
+        """Fast delay within a burst: 0.7-0.9 seconds"""
+        return random.uniform(0.7, 0.9) + random.uniform(-0.05, 0.05)
+
+    def get_pause_delay(self, burst_number):
+        """
+        Pause after each burst:
+        - After 1st burst (5 rolls): 1.5-2.5s
+        - After 2nd burst (10 rolls): 2.0-3.0s
+        - After 3rd burst (15 rolls): 1.5-2.5s
+        - After 4th burst (20 rolls): then $us 20 with 5s pause
+        """
+        if burst_number == 1:
+            return random.uniform(1.5, 2.5)
+        elif burst_number == 2:
+            return random.uniform(2.0, 3.0)
+        elif burst_number == 3:
+            return random.uniform(1.5, 2.5)
+        else:
+            return random.uniform(1.5, 2.0)
 
     # ── Safe Send with Rate Limit Handling ────────────────────────────
     async def safe_send(self, msg, retry_count=0):
@@ -161,9 +167,9 @@ class MudaeRoller(discord.Client):
             self.rate_limited_until = 0
 
         gap = time.time() - self.last_send_time
-        min_gap = 0.8
+        min_gap = 0.6
         if gap < min_gap:
-            await asyncio.sleep(min_gap - gap + random.uniform(0.1, 0.2))
+            await asyncio.sleep(min_gap - gap + random.uniform(0.05, 0.15))
 
         try:
             await self.channel.send(msg)
@@ -232,9 +238,8 @@ class MudaeRoller(discord.Client):
                     if re.search(REGEX_PATTERNS["DK_READY"], content_lower):
                         if self.current_dk_power < 50 and self.dk_stock_count > 0:
                             logger.info('💪 Using DK to refill...')
-                            result = await self.safe_send('$dk')
-                            if result:
-                                self.dk_stock_count -= 1
+                            await self.safe_send('$dk')
+                            self.dk_stock_count -= 1
                             await asyncio.sleep(2)
                     break
             return True
@@ -258,11 +263,10 @@ class MudaeRoller(discord.Client):
         
         if self.current_dk_power < min_power_needed and self.dk_stock_count > 0:
             logger.info(f'⚡ DK Power low ({self.current_dk_power}%). Using $dk...')
-            result = await self.safe_send('$dk')
-            if result:
-                self.dk_stock_count -= 1
-                self.current_dk_power = self.max_dk_power
-                self.last_dk_power_update_utc = datetime.now(timezone.utc)
+            await self.safe_send('$dk')
+            self.dk_stock_count -= 1
+            self.current_dk_power = self.max_dk_power
+            self.last_dk_power_update_utc = datetime.now(timezone.utc)
             await asyncio.sleep(2)
             return True
         return False
@@ -283,17 +287,9 @@ class MudaeRoller(discord.Client):
             return True
         return False
 
-    # ── Cleanup kakera_reacted_messages ────────────────────────────────
-    def cleanup_kakera_messages(self):
-        """Clear old message IDs periodically to prevent memory leak"""
-        now = time.time()
-        if now - self.last_kakera_cleanup > 300:  # Cleanup every 5 minutes
-            self.kakera_reacted_messages.clear()
-            self.last_kakera_cleanup = now
-
     # ── HANDLE KAKERA REACTIONS ──────────────────────────────────────
     async def handle_kakera_reactions(self, message):
-        """ONLY react to 10+ keys characters with: Purple, Orange, Light, Rainbow, Chaos"""
+        """ONLY react to 10+ keys characters with: Purple(P), Light(L), Red(R), Chaos(C), Rainbow(W)"""
         if not self.kakera_enabled:
             return False
 
@@ -334,7 +330,7 @@ class MudaeRoller(discord.Client):
                 if not (emoji_name in all_kakera or emoji_clean in all_kakera or 'kakera' in emoji_name.lower()):
                     continue
                 
-                # ONLY react to desired kakera: Purple, Orange, Light, Rainbow, Chaos
+                # ONLY react to desired kakera: Purple(P), Light(L), Red(R), Chaos(C), Rainbow(W)
                 is_purple = (emoji_clean == 'kakeraP')
                 is_desired = emoji_clean in self.desired_kakera
                 
@@ -380,11 +376,10 @@ class MudaeRoller(discord.Client):
             if not is_free and self.current_dk_power < cost:
                 if self.dk_stock_count > 0:
                     logger.info(f'⚡ Power low ({self.current_dk_power}%), using $dk...')
-                    result = await self.safe_send('$dk')
-                    if result:
-                        self.dk_stock_count -= 1
-                        self.current_dk_power = self.max_dk_power
-                        self.last_dk_power_update_utc = datetime.now(timezone.utc)
+                    await self.safe_send('$dk')
+                    self.dk_stock_count -= 1
+                    self.current_dk_power = self.max_dk_power
+                    self.last_dk_power_update_utc = datetime.now(timezone.utc)
                     await asyncio.sleep(2)
                 else:
                     continue
@@ -415,11 +410,14 @@ class MudaeRoller(discord.Client):
                 continue
 
         return clicked_count > 0
-
-    # ── ROLL LOOP ──────────────────────────────────────────────────────
+        
+        # ── ROLL LOOP ── 5-5-5-5 Pattern ─────────────────────────────────
     async def roll_loop(self):
         logger.info(f'🚀 Roll loop started! Using: {self.current_claim}')
+        logger.info(f'📊 Pattern: 5 rolls → pause → 5 rolls → pause → 5 rolls → pause → 5 rolls → pause → $us 20')
         self.roll_count = 0
+        burst_size = 5
+        burst_number = 0
 
         while self.is_running and not self.stop_flag:
             try:
@@ -427,31 +425,72 @@ class MudaeRoller(discord.Client):
                     await asyncio.sleep(2)
                     continue
 
-                await self.check_dk_power()
-                await self.safe_send(self.current_claim)
-                self.roll_count += 1
-                self.total_rolls += 1
+                # ── BURST: 5 rolls ──────────────────────────────────────
+                for i in range(burst_size):
+                    # Check stop flag BEFORE each roll
+                    if self.stop_flag or not self.is_running:
+                        break
+                    
+                    await self.check_dk_power()
+                    await self.safe_send(self.current_claim)
+                    self.roll_count += 1
+                    self.total_rolls += 1
 
-                if self.total_rolls % 50 == 0:
-                    logger.info(f'📊 Rolls: {self.total_rolls} | {self.current_claim_type}')
+                    if self.total_rolls % 50 == 0:
+                        logger.info(f'📊 Rolls: {self.total_rolls} | {self.current_claim_type}')
 
-                # $us after 20 rolls
-                if self.roll_count >= 20:
+                    # Delay within burst (fast)
+                    if i < burst_size - 1:  # Don't delay after last roll in burst
+                        await asyncio.sleep(self.get_burst_delay())
+
+                # ── CHECK STOP AFTER BURST ─────────────────────────────
+                if self.stop_flag or not self.is_running:
+                    break
+
+                burst_number += 1
+
+                # ── PAUSE AFTER BURST ──────────────────────────────────
+                if burst_number == 1:
+                    # After first 5 rolls: 1.5-2.5s pause
+                    pause = random.uniform(1.5, 2.5)
+                    logger.info(f'⏳ Burst 1/4 complete ({self.roll_count}/20). Pausing {pause:.1f}s')
+                    await asyncio.sleep(pause)
+                    
+                elif burst_number == 2:
+                    # After second 5 rolls (10 total): 2.0-3.0s pause
+                    pause = random.uniform(2.0, 3.0)
+                    logger.info(f'⏳ Burst 2/4 complete ({self.roll_count}/20). Pausing {pause:.1f}s')
+                    await asyncio.sleep(pause)
+                    
+                elif burst_number == 3:
+                    # After third 5 rolls (15 total): 1.5-2.5s pause
+                    pause = random.uniform(1.5, 2.5)
+                    logger.info(f'⏳ Burst 3/4 complete ({self.roll_count}/20). Pausing {pause:.1f}s')
+                    await asyncio.sleep(pause)
+                    
+                elif burst_number == 4:
+                    # After fourth 5 rolls (20 total): $us 20 + 5s pause
+                    logger.info(f'✅ Burst 4/4 complete ({self.roll_count}/20). Executing $us 20...')
+                    
+                    # Small delay before $us
                     await asyncio.sleep(random.uniform(0.8, 1.5))
                     await self.safe_send('$us 20')
                     self.roll_count = 0
-                    logger.info('$us 20 sent — 5 second pause')
+                    burst_number = 0
                     
-                    # 5 SECOND PAUSE (reduced from 15)
+                    logger.info('$us 20 sent — 5 second pause')
                     for i in range(5):
                         if self.stop_flag:
                             break
                         await asyncio.sleep(1)
                     continue
 
-                # Humanized delay between rolls
-                delay = self.get_humanized_delay()
-                await asyncio.sleep(delay)
+                # ── RANDOM HUMANIZATION ──────────────────────────────
+                # 10% chance of a random "thinking" pause
+                if random.random() < 0.10 and not self.stop_flag:
+                    extra_pause = random.uniform(1.0, 2.5)
+                    logger.info(f'🧠 Random human pause: {extra_pause:.1f}s')
+                    await asyncio.sleep(extra_pause)
 
             except asyncio.CancelledError:
                 logger.info('Roll loop cancelled')
@@ -461,7 +500,7 @@ class MudaeRoller(discord.Client):
                 await asyncio.sleep(5)
 
         self.is_running = False
-        logger.info('Roll loop stopped')
+        logger.info(f'Roll loop stopped. Total rolls: {self.total_rolls}')
 
     # ── MESSAGE HANDLER ──────────────────────────────────────────────
     async def on_message(self, message):
@@ -504,7 +543,6 @@ class MudaeRoller(discord.Client):
                 if has_kakera and message.id not in self.kakera_reacted_messages:
                     await asyncio.sleep(random.uniform(0.2, 0.5))
                     await self.handle_kakera_reactions(message)
-                    self.cleanup_kakera_messages()
                     return
 
     # ── PROCESS COMMANDS ──────────────────────────────────────────────
@@ -550,6 +588,7 @@ class MudaeRoller(discord.Client):
 
         # ── STOP ────────────────────────────────────────────────────────
         if cmd == '!stop':
+            logger.info('🛑 STOP command received!')
             self.stop_flag = True
             self.is_running = False
             
@@ -562,6 +601,7 @@ class MudaeRoller(discord.Client):
                 self.roll_loop_task = None
             
             await message.channel.send(f'🛑 Stopped! Total rolls: {self.total_rolls}')
+            logger.info(f'Stopped. Total rolls: {self.total_rolls}')
             return
 
         # ── STATUS ──────────────────────────────────────────────────────
@@ -599,12 +639,13 @@ class MudaeRoller(discord.Client):
                 '`!status` - Status\n'
                 '`!kakera` - Toggle kakera\n'
                 '`!onlychaos` - Toggle ONLY_CHAOS\n\n'
-                '**Kakera (10+ keys):** Purple, Orange, Light, Rainbow, Chaos\n'
+                '**Rhythm:** 5-5-5-5 pattern (20 rolls) → $us 20 → repeat\n'
+                '**Kakera (10+ keys):** Purple(P), Light(L), Red(R), Chaos(C), Rainbow(W)\n'
                 'Purple = FREE, Chaos = half DK cost'
             )
             return
 
-# ── MAIN ──────────────────────────────────────────────────────────────
+# ── MAIN ──────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     threading.Thread(target=run_webserver, daemon=True).start()
     logger.info(f'Starting bot | Channel: {CHANNEL_ID}')
