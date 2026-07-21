@@ -335,10 +335,12 @@ class MudaeRoller(discord.Client):
                 for btn in row.children:
                     if not hasattr(btn, 'emoji') or not btn.emoji:
                         continue
-                    if not hasattr(btn.emoji, 'name') or not btn.emoji.name:
+                    
+                    # FIXED: Safe emoji name extraction using getattr
+                    emoji_name = getattr(btn.emoji, 'name', None)
+                    if not emoji_name:
                         continue
 
-                    emoji_name = btn.emoji.name
                     emoji_clean = emoji_name.rstrip('2')
 
                     if not (emoji_name in all_kakera or emoji_clean in all_kakera or 'kakera' in emoji_name.lower()):
